@@ -55,7 +55,7 @@ class LocationUpdatesService : Service() {
         internal const val EXTRA_LOCATION = "$PACKAGE_NAME.location"
         private const val EXTRA_STARTED_FROM_NOTIFICATION = "$PACKAGE_NAME.started_from_notification"
         var UPDATE_INTERVAL_IN_MILLISECONDS: Long = 1000
-        var FASTEST_UPDATE_INTERVAL_IN_MILLISECONDS = UPDATE_INTERVAL_IN_MILLISECONDS / 2
+        private val FASTEST_UPDATE_INTERVAL_IN_MILLISECONDS = UPDATE_INTERVAL_IN_MILLISECONDS / 2
         private const val NOTIFICATION_ID = 12345678
         private lateinit var broadcastReceiver: BroadcastReceiver
 
@@ -79,14 +79,14 @@ class LocationUpdatesService : Service() {
 
 
             val builder = NotificationCompat.Builder(this, "BackgroundLocation")
-                    .setContentTitle(NOTIFICATION_TITLE)
-                    .setOngoing(true)
-                    .setSound(null)
-                    .setPriority(NotificationCompat.PRIORITY_HIGH)
-                    .setSmallIcon(resources.getIdentifier(NOTIFICATION_ICON, "mipmap", packageName))
-                    .setWhen(System.currentTimeMillis())
-                    .setStyle(NotificationCompat.BigTextStyle().bigText(NOTIFICATION_MESSAGE))
-                    .setContentIntent(pendingIntent)
+                .setContentTitle(NOTIFICATION_TITLE)
+                .setOngoing(true)
+                .setSound(null)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setSmallIcon(resources.getIdentifier(NOTIFICATION_ICON, "mipmap", packageName))
+                .setWhen(System.currentTimeMillis())
+                .setStyle(NotificationCompat.BigTextStyle().bigText(NOTIFICATION_MESSAGE))
+                .setContentIntent(pendingIntent)
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 builder.setChannelId(CHANNEL_ID)
@@ -100,15 +100,15 @@ class LocationUpdatesService : Service() {
     override fun onCreate() {
         val googleAPIAvailability = GoogleApiAvailability.getInstance()
             .isGooglePlayServicesAvailable(applicationContext)
-        
+
         isGoogleApiAvailable = googleAPIAvailability == ConnectionResult.SUCCESS
-        
+
 
         if (isGoogleApiAvailable && !this.forceLocationManager) {
             mFusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
-            
+
             mFusedLocationCallback = object : LocationCallback() {
-                override fun onLocationResult(locationResult: LocationResult?) {
+                override fun onLocationResult(locationResult: LocationResult) {
                     super.onLocationResult(locationResult)
                     onNewLocation(locationResult!!.lastLocation)
                 }
@@ -156,7 +156,7 @@ class LocationUpdatesService : Service() {
         Utils.setRequestingLocationUpdates(this, true)
         try {
             if (isGoogleApiAvailable && !this.forceLocationManager) {
-                mFusedLocationClient!!.requestLocationUpdates(mLocationRequest,
+                mFusedLocationClient!!.requestLocationUpdates(mLocationRequest!!,
                     mFusedLocationCallback!!, Looper.myLooper())
             } else {
                 mLocationManager?.requestLocationUpdates(LocationManager.GPS_PROVIDER, 0L, 0f, mLocationManagerCallback!!)
@@ -186,11 +186,11 @@ class LocationUpdatesService : Service() {
         try {
             if(isGoogleApiAvailable && !this.forceLocationManager) {
                 mFusedLocationClient!!.lastLocation
-                        .addOnCompleteListener { task ->
-                            if (task.isSuccessful && task.result != null) {
-                                mLocation = task.result
-                            }
+                    .addOnCompleteListener { task ->
+                        if (task.isSuccessful && task.result != null) {
+                            mLocation = task.result
                         }
+                    }
             } else {
                 mLocation = mLocationManager!!.getLastKnownLocation(LocationManager.GPS_PROVIDER)
             }
@@ -198,7 +198,7 @@ class LocationUpdatesService : Service() {
         }
     }
 
-    private fun onNewLocation(location: Location) {
+    private fun onNewLocation(location: Location?) {
         mLocation = location
         val intent = Intent(ACTION_BROADCAST)
         intent.putExtra(EXTRA_LOCATION, location)
