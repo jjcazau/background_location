@@ -11,6 +11,11 @@ class LocationServiceState {
   bool get isTerminal => state == 'stopped' || state == 'error';
 }
 
+/// Requested power/accuracy trade-off; actual accuracy depends on the OS.
+/// Android's non-Google fallback uses network only for balanced/lowPower and
+/// GPS plus network for high. Settings apply on the next stopped-to-started run.
+enum BackgroundLocationAccuracy { high, balanced, lowPower }
+
 class BackgroundLocation {
   static const _channel =
       MethodChannel('com.almoullim.background_location/methods');
@@ -37,6 +42,10 @@ class BackgroundLocation {
           bearing: number('bearing'),
           speed: number('speed'),
           time: number('time'),
+          speedAccuracy: number('speed_accuracy'),
+          verticalAccuracy: number('vertical_accuracy'),
+          bearingAccuracy: number('bearing_accuracy'),
+          provider: data['provider'] as String?,
           isMock: data['is_mock'] as bool?));
     }
   }
@@ -53,11 +62,14 @@ class BackgroundLocation {
   }
 
   static Future<dynamic> startLocationService(
-      {double distanceFilter = 0, bool forceAndroidLocationManager = false}) {
+      {double distanceFilter = 0,
+      bool forceAndroidLocationManager = false,
+      BackgroundLocationAccuracy accuracy = BackgroundLocationAccuracy.high}) {
     _listen();
     return _channel.invokeMethod('start_location_service', {
       'distance_filter': distanceFilter,
       'force_location_manager': forceAndroidLocationManager,
+      'accuracy': accuracy.name,
     });
   }
 
@@ -135,6 +147,15 @@ class Location {
   double? accuracy;
   double? speed;
   double? time;
+
+  /// Unavailable native measurements are null. Accuracy values are uncertainty:
+  /// m/s for speed, metres for altitude, degrees for bearing.
+  double? speedAccuracy;
+  double? verticalAccuracy;
+  double? bearingAccuracy;
+
+  /// Android provider name; null on iOS (CoreLocation does not expose it).
+  String? provider;
   bool? isMock;
 
   Location(
@@ -145,6 +166,10 @@ class Location {
       this.bearing,
       this.speed,
       this.time,
+      this.speedAccuracy,
+      this.verticalAccuracy,
+      this.bearingAccuracy,
+      this.provider,
       this.isMock});
 
   Map<String, dynamic> toMap() {
@@ -156,6 +181,10 @@ class Location {
       'accuracy': accuracy,
       'speed': speed,
       'time': time,
+      'speed_accuracy': speedAccuracy,
+      'vertical_accuracy': verticalAccuracy,
+      'bearing_accuracy': bearingAccuracy,
+      'provider': provider,
       'is_mock': isMock
     };
     return obj;

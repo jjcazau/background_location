@@ -156,3 +156,28 @@ AndroidManifest.xml
 <!-- TODO: Fix example -->
 <!-- ## Example -->
 <!-- **[Complete working application Example](https://github.com/almoullim/background_location/tree/master/example)** -->
+
+
+### Accuracy settings and optional metadata (0.9.7+embermap.1)
+
+`startLocationService(accuracy: BackgroundLocationAccuracy.high)` defaults to
+high accuracy. `balanced` and `lowPower` request the corresponding Android
+fused priority; on iOS they request 100 metre and 1 kilometre accuracy. These
+are requests, not guarantees. Changes apply after stop/start; starting an
+already active service keeps its current configuration.
+
+On the Android LocationManager fallback, high uses GPS plus network with fine
+permission, or network alone with coarse permission. Balanced/lowPower use only
+network, and fail with `location_services_disabled` if it is unavailable. Disabled
+providers are registered when present so they can recover during a session.
+Disabling one provider does not stop tracking while another selected provider
+remains enabled. No last-known location is injected. Fixes older than 30 seconds,
+future/invalid fixes, and non-increasing monotonic timestamps are rejected.
+A poorer fix from another provider waits until the previous accepted fix is at
+least 10 seconds old; same-provider movement continues normally.
+
+`Location` exposes nullable `speedAccuracy` (m/s), `verticalAccuracy` (metres),
+`bearingAccuracy` (degrees), and `provider`. Android accuracy metadata requires
+API 26 and a present measurement. CoreLocation does not expose the provider;
+iOS bearing accuracy requires iOS 13.4. Missing/invalid uncertainty is null,
+not a claim of zero uncertainty. Existing fields and listeners are unchanged.

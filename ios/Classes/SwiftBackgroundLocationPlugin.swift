@@ -7,6 +7,7 @@ public class SwiftBackgroundLocationPlugin: NSObject, FlutterPlugin, CLLocationM
     private let channel: FlutterMethodChannel
     private var timeout: DispatchWorkItem?
     private var distance = 0.0
+    private var accuracy = "high"
     private lazy var lifecycle = TrackingLifecycle(cleanup: { [weak self] in
         self?.stopLocationUpdates()
     }, emit: { [weak self] state, code in
@@ -34,7 +35,15 @@ public class SwiftBackgroundLocationPlugin: NSObject, FlutterPlugin, CLLocationM
                 result(FlutterError(code: "invalid_argument", message: "distanceFilter must be finite and non-negative", details: nil))
                 return
             }
-            if lifecycle.state != "starting" && lifecycle.state != "running" { distance = requestedDistance }
+            let requestedAccuracy = args?["accuracy"] as? String ?? "high"
+            guard ["high", "balanced", "lowPower"].contains(requestedAccuracy) else {
+                result(FlutterError(code: "invalid_argument", message: "Unknown accuracy setting", details: nil))
+                return
+            }
+            if lifecycle.state != "starting" && lifecycle.state != "running" {
+                distance = requestedDistance
+                accuracy = requestedAccuracy
+            }
             lifecycle.start(reply: { code in
                 if let code = code { result(FlutterError(code: code, message: "Location startup failed: \(code)", details: nil)) }
                 else { result(true) }
@@ -74,6 +83,7 @@ public class SwiftBackgroundLocationPlugin: NSObject, FlutterPlugin, CLLocationM
             return
         }
         locationManager?.distanceFilter = distance
+        locationManager?.desiredAccuracy = LocationConfiguration.desiredAccuracy(accuracy)
         let modes = Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes") as? [String] ?? []
         locationManager?.allowsBackgroundLocationUpdates = modes.contains("location")
         if #available(iOS 11.0, *) { locationManager?.showsBackgroundLocationIndicator = true }
@@ -110,11 +120,13 @@ public class SwiftBackgroundLocationPlugin: NSObject, FlutterPlugin, CLLocationM
 
     public func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard lifecycle.state == "running", let latest = locations.last else { return }
-        channel.invokeMethod("location", arguments: [
+        let metadata = LocationConfiguration.metadata(latest)
+        let payload: [String: Any] = [
             "speed": latest.speed, "altitude": latest.altitude,
             "latitude": latest.coordinate.latitude, "longitude": latest.coordinate.longitude,
             "accuracy": latest.horizontalAccuracy, "bearing": latest.course,
             "time": latest.timestamp.timeIntervalSince1970 * 1000, "is_mock": false
-        ] as [String: Any])
+        ]
+        channel.invokeMethod("location", arguments: payload.merging(metadata) { _, value in value })
     }
 }

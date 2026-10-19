@@ -6,6 +6,7 @@ import android.content.*
 import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationManager
+import android.os.SystemClock
 import android.os.Looper
 import io.flutter.plugin.common.*
 import org.junit.Assert.*
@@ -131,7 +132,7 @@ class NativeLifecycleTest {
         val request = shadowOf(manager).getLegacyLocationRequests(LocationManager.GPS_PROVIDER).single()
         assertEquals(LocationUpdatesService.UPDATE_INTERVAL_IN_MILLISECONDS, request.intervalMillis)
         assertEquals(12f, request.minUpdateDistanceMeters, 0f)
-        shadowOf(manager).simulateLocation(Location(LocationManager.GPS_PROVIDER).apply { latitude = 1.0; longitude = 2.0 })
+        shadowOf(manager).simulateLocation(Location(LocationManager.GPS_PROVIDER).apply { latitude = 1.0; longitude = 2.0; accuracy = 5f; elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos() })
         shadowOf(Looper.getMainLooper()).idle()
         assertTrue(messenger.events.any { it.method == "location" })
         shadowOf(RuntimeEnvironment.getApplication()).denyPermissions(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
@@ -142,4 +143,88 @@ class NativeLifecycleTest {
         bridge.onDetachedFromEngine()
         controller.destroy()
     }
+    @Test fun networkFallbackSurvivesGpsLossAndCleansBothProviders() {
+        enableLocation()
+        val manager = RuntimeEnvironment.getApplication().getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        shadowOf(manager).setProviderEnabled(LocationManager.NETWORK_PROVIDER, true)
+        val controller = Robolectric.buildService(LocationUpdatesService::class.java).create()
+        val service = controller.get()
+        val fixes = mutableListOf<Location>()
+        val stopped = mutableListOf<String>()
+        service.onLocation = { fixes.add(it) }
+        service.onStopped = { stopped.add(it) }
+        service.startTracking(0.0, true) { assertNull(it) }
+        assertEquals(1, shadowOf(manager).getLocationUpdateListeners(LocationManager.GPS_PROVIDER).size)
+        assertEquals(1, shadowOf(manager).getLocationUpdateListeners(LocationManager.NETWORK_PROVIDER).size)
+        shadowOf(manager).setProviderEnabled(LocationManager.GPS_PROVIDER, false)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertTrue(stopped.isEmpty())
+        shadowOf(manager).simulateLocation(Location(LocationManager.NETWORK_PROVIDER).apply {
+            latitude = 1.0; longitude = 2.0; accuracy = 50f
+            elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+        })
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(1, fixes.size)
+        shadowOf(manager).setProviderEnabled(LocationManager.NETWORK_PROVIDER, false)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(listOf("location_services_disabled"), stopped)
+        assertTrue(shadowOf(manager).getLocationUpdateListeners(LocationManager.GPS_PROVIDER).isEmpty())
+        assertTrue(shadowOf(manager).getLocationUpdateListeners(LocationManager.NETWORK_PROVIDER).isEmpty())
+        controller.destroy()
+    }
+
+    @Test fun coarseOnlyPermissionUsesNetworkAndReportsOptionalMetadata() {
+        enableLocation()
+        val app = RuntimeEnvironment.getApplication()
+        shadowOf(app).denyPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
+        shadowOf(app).grantPermissions(Manifest.permission.ACCESS_COARSE_LOCATION)
+        val manager = app.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        shadowOf(manager).setProviderEnabled(LocationManager.GPS_PROVIDER, false)
+        shadowOf(manager).setProviderEnabled(LocationManager.NETWORK_PROVIDER, true)
+        val context = BindingContext()
+        val messenger = Messenger()
+        val bridge = BackgroundLocationService()
+        bridge.onAttachedToEngine(context, messenger)
+        val reply = start(bridge)
+        val controller = Robolectric.buildService(LocationUpdatesService::class.java).create()
+        context.pending!!.onServiceConnected(ComponentName(context, LocationUpdatesService::class.java), controller.get().LocalBinder())
+        assertEquals(true, reply.value)
+        assertTrue(shadowOf(manager).getLocationUpdateListeners(LocationManager.GPS_PROVIDER).isEmpty())
+        shadowOf(manager).simulateLocation(Location(LocationManager.NETWORK_PROVIDER).apply {
+            latitude = 1.0; longitude = 2.0; accuracy = 20f
+            elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+            speedAccuracyMetersPerSecond = 0.5f; verticalAccuracyMeters = 3f
+        })
+        shadowOf(Looper.getMainLooper()).idle()
+        val event = messenger.events.single { it.method == "location" }
+        assertEquals("network", event.argument<String>("provider"))
+        assertEquals(0.5, event.argument<Double>("speed_accuracy")!!, 0.0)
+        assertEquals(3.0, event.argument<Double>("vertical_accuracy")!!, 0.0)
+        assertNull(event.argument<Double>("bearing_accuracy"))
+        bridge.onDetachedFromEngine()
+        assertTrue(shadowOf(manager).getLocationUpdateListeners(LocationManager.NETWORK_PROVIDER).isEmpty())
+        controller.destroy()
+    }
+
+    @Test fun balancedAndLowPowerAvoidGpsAndInvalidAccuracyNeverBinds() {
+        enableLocation()
+        val manager = RuntimeEnvironment.getApplication().getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        shadowOf(manager).setProviderEnabled(LocationManager.NETWORK_PROVIDER, true)
+        for (accuracy in listOf("balanced", "lowPower")) {
+            val controller = Robolectric.buildService(LocationUpdatesService::class.java).create()
+            controller.get().startTracking(9.0, true, accuracy) { assertNull(it) }
+            assertTrue(shadowOf(manager).getLocationUpdateListeners(LocationManager.GPS_PROVIDER).isEmpty())
+            assertEquals(9f, shadowOf(manager).getLegacyLocationRequests(LocationManager.NETWORK_PROVIDER).single().minUpdateDistanceMeters, 0f)
+            controller.destroy()
+        }
+        val context = BindingContext()
+        val bridge = BackgroundLocationService()
+        bridge.onAttachedToEngine(context, Messenger())
+        val reply = Reply()
+        bridge.onMethodCall(MethodCall("start_location_service", mapOf("accuracy" to "unknown")), reply)
+        assertEquals("invalid_argument", reply.error)
+        assertEquals(0, context.binds)
+        bridge.onDetachedFromEngine()
+    }
+
 }

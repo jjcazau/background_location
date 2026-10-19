@@ -9,6 +9,14 @@ void main() {
   final messenger =
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
 
+  Future<void> emit(String method, Object data) async {
+    await messenger.handlePlatformMessage(
+        channel.name,
+        const StandardMethodCodec().encodeMethodCall(MethodCall(method, data)),
+        (_) {});
+    await Future<void>.delayed(Duration.zero);
+  }
+
   tearDown(() async {
     await BackgroundLocation.removeLocationUpdates();
     messenger.setMockMethodCallHandler(channel, null);
@@ -26,8 +34,49 @@ void main() {
     await BackgroundLocation.stopLocationService();
     expect(calls.map((call) => call.method),
         ['start_location_service', 'stop_location_service']);
-    expect(calls.first.arguments,
-        {'distance_filter': 15.0, 'force_location_manager': true});
+    expect(calls.first.arguments, {
+      'distance_filter': 15.0,
+      'force_location_manager': true,
+      'accuracy': 'high'
+    });
+  });
+
+  test('accuracy presets reach native startup unchanged', () async {
+    final requests = <String>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      requests.add((call.arguments as Map)['accuracy'] as String);
+      return true;
+    });
+    for (final accuracy in BackgroundLocationAccuracy.values) {
+      await BackgroundLocation.startLocationService(accuracy: accuracy);
+    }
+    expect(requests, ['high', 'balanced', 'lowPower']);
+  });
+
+  test('accuracy metadata survives channel and map with nullable legacy fields',
+      () async {
+    final first = BackgroundLocation().getCurrentLocation();
+    await emit('location', {
+      'latitude': 1,
+      'speed_accuracy': 2,
+      'vertical_accuracy': 3.5,
+      'bearing_accuracy': 0,
+      'provider': 'network'
+    });
+    final fix = await first;
+    expect(fix.speedAccuracy, 2.0);
+    expect(fix.verticalAccuracy, 3.5);
+    expect(fix.bearingAccuracy, 0.0);
+    expect(fix.provider, 'network');
+    expect(fix.toMap()['speed_accuracy'], 2.0);
+    expect(fix.toMap()['provider'], 'network');
+    final legacy = BackgroundLocation().getCurrentLocation();
+    await emit('location', {'latitude': 1});
+    final old = await legacy;
+    expect(old.speedAccuracy, isNull);
+    expect(old.verticalAccuracy, isNull);
+    expect(old.bearingAccuracy, isNull);
+    expect(old.provider, isNull);
   });
 
   test('startup errors propagate to the caller', () async {
@@ -89,14 +138,6 @@ void main() {
     expect(locations.single.time, 1234.0);
     expect(locations.single.isMock, false);
   });
-  Future<void> emit(String method, Object data) async {
-    await messenger.handlePlatformMessage(
-        channel.name,
-        const StandardMethodCodec().encodeMethodCall(MethodCall(method, data)),
-        (_) {});
-    await Future<void>.delayed(Duration.zero);
-  }
-
   test('one-shot reads and independent listeners coexist with legacy callback',
       () async {
     final a = <double?>[], b = <double?>[], legacy = <double?>[];

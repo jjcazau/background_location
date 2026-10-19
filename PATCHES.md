@@ -1,6 +1,7 @@
 # Ember Map maintained fork
 
-The `codex/ember-map-location-fixes` branch retains jjcazau repository history.
+The maintained `master` branch retains jjcazau repository history.
+The first two releases were prepared on `codex/ember-map-location-fixes`.
 Native and Dart sources were first aligned with Ember Map's previously locked
 AlexanderHorielko/background_location commit
 `9db60e0ee6690dce9c9377f2e0c39a09b484893f`.
@@ -142,3 +143,37 @@ Headless execution, process/reboot restoration, native buffering and optional
 significant-change tracking remain separate features, not claims of this release.
 Physical-device permission/background/screen-off checks are still needed before
 shipping. See TESTING.md for repeatable targeted commands.
+
+
+## 0.9.7+embermap.1 — provider fallback and accuracy
+
+Independently implemented after reviewing the published
+[background_locator_2 2.0.6 archive](https://pub.dev/api/archives/background_locator_2-2.0.6.tar.gz).
+No source was copied from that separate MIT-licensed package.
+
+- Network plus GPS fallback, coarse-only network operation, recovery of disabled
+  providers, and teardown of all selected listeners. A selected provider becoming
+  unavailable is terminal only when all selected providers are disabled.
+- Monotonic timestamps enforce a 30-second freshness limit and ordered fixes.
+  Prefer a recent better provider fix for ten seconds before accepting poorer
+  fallback accuracy; same-provider movement continues. Do not emit cached fixes.
+- Nullable native speed/vertical/bearing uncertainty and Android provider names.
+- Typed high/balanced/lowPower startup settings, mapped to fused priority,
+  fallback provider selection and CoreLocation desiredAccuracy. High remains
+  the default. Stop/start is required to change active settings.
+- Avoid the reviewed package's incorrect wake-lock release, impossible accuracy
+  predicate and unbounded-age cached startup fix. No wake lock, reboot receiver,
+  headless engine or region monitoring added.
+
+See README.md for exact policy and TESTING.md for repeatable commands.
+
+### Validation for 0.9.7
+
+- Nine package Flutter tests pass; package Dart analysis is clean.
+- Thirteen Android JVM tests pass (four lifecycle, seven real bridge/service,
+  two fix-arbitration tests), Robolectric API 28. Includes coarse-only network
+  startup, loss of GPS with network continuity, loss of all selected providers,
+  low-power provider selection, metadata and callback cleanup.
+- Swift lifecycle and real CLLocation metadata/configuration harness passes;
+  all Swift plugin sources type-check against the iOS simulator SDK/Flutter.
+- Full platform builds and physical-device tests remain for the application owner.

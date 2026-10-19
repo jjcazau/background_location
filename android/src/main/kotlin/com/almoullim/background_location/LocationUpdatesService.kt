@@ -1,5 +1,7 @@
 package com.almoullim.background_location
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.app.*
 import android.content.*
 import android.content.pm.ServiceInfo
@@ -50,7 +52,7 @@ class LocationUpdatesService : Service() {
         ContextCompat.registerReceiver(this, stopReceiver, IntentFilter(STOP_SERVICE), ContextCompat.RECEIVER_NOT_EXPORTED)
     }
 
-    internal fun startTracking(distance: Double, forceManager: Boolean, reply: (String?) -> Unit) {
+    internal fun startTracking(distance: Double, forceManager: Boolean, accuracy: String = "high", reply: (String?) -> Unit) {
         val token = ++generation
         active = true
         try {
@@ -71,7 +73,12 @@ class LocationUpdatesService : Service() {
                 }
                 fused = client
                 fusedCallback = callback
-                val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, UPDATE_INTERVAL_IN_MILLISECONDS)
+                val priority = when (accuracy) {
+                    "balanced" -> Priority.PRIORITY_BALANCED_POWER_ACCURACY
+                    "lowPower" -> Priority.PRIORITY_LOW_POWER
+                    else -> Priority.PRIORITY_HIGH_ACCURACY
+                }
+                val request = LocationRequest.Builder(priority, UPDATE_INTERVAL_IN_MILLISECONDS)
                     .setMinUpdateIntervalMillis(UPDATE_INTERVAL_IN_MILLISECONDS / 2)
                     .setMinUpdateDistanceMeters(distance.toFloat()).build()
                 client.requestLocationUpdates(request, callback, Looper.getMainLooper())
@@ -87,17 +94,26 @@ class LocationUpdatesService : Service() {
                     }
             } else {
                 val provider = getSystemService(LOCATION_SERVICE) as LocationManager
-                if (!provider.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                val fine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+                // Register available providers even while disabled, so enabling
+                // GPS during a network-only session can recover precise fixes.
+                val candidates = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
+                    .filter { it in provider.allProviders &&
+                        (it != LocationManager.GPS_PROVIDER || (fine && accuracy == "high")) }
+                if (candidates.none { provider.isProviderEnabled(it) }) {
                     stopTracking()
                     reply("location_services_disabled")
                     return
                 }
+                val filter = FallbackFixFilter()
                 val callback = object : LocationListener {
                     override fun onLocationChanged(location: Location) {
-                        if (active && generation == token) onLocation?.invoke(location)
+                        if (active && generation == token && filter.accept(location, SystemClock.elapsedRealtimeNanos()))
+                            onLocation?.invoke(location)
                     }
-                    override fun onProviderDisabled(provider: String) {
-                        if (active && generation == token) stopTracking("location_services_disabled")
+                    override fun onProviderDisabled(name: String) {
+                        if (active && generation == token && candidates.none { provider.isProviderEnabled(it) })
+                            stopTracking("location_services_disabled")
                     }
                     override fun onProviderEnabled(provider: String) { }
                     @Deprecated("Required for older Android LocationListener implementations")
@@ -105,8 +121,10 @@ class LocationUpdatesService : Service() {
                 }
                 manager = provider
                 managerCallback = callback
-                provider.requestLocationUpdates(LocationManager.GPS_PROVIDER, UPDATE_INTERVAL_IN_MILLISECONDS,
-                    distance.toFloat(), callback, Looper.getMainLooper())
+                for (name in candidates) {
+                    provider.requestLocationUpdates(name, UPDATE_INTERVAL_IN_MILLISECONDS,
+                        distance.toFloat(), callback, Looper.getMainLooper())
+                }
                 reply(null)
             }
         } catch (error: RuntimeException) {

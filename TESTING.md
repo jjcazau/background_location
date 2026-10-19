@@ -6,7 +6,7 @@ From this package checkout:
 flutter pub get
 flutter test
 dart analyze lib test
-swiftc ios/Classes/TrackingLifecycle.swift ios/Tests/main.swift -o /tmp/location-lifecycle-tests
+swiftc ios/Classes/TrackingLifecycle.swift ios/Classes/LocationConfiguration.swift ios/Tests/main.swift -o /tmp/location-lifecycle-tests
 /tmp/location-lifecycle-tests
 ```
 

@@ -21,6 +21,7 @@ class BackgroundLocationService : MethodChannel.MethodCallHandler, PluginRegistr
     private var permissionInFlight = false
     private var distance = 0.0
     private var forceManager = false
+    private var accuracy = "high"
     private val handler = Handler(Looper.getMainLooper())
     private var timeout: Runnable? = null
     private val session = TrackingSession(::cleanup) { state, code ->
@@ -106,10 +107,14 @@ class BackgroundLocationService : MethodChannel.MethodCallHandler, PluginRegistr
                         "latitude" to location.latitude, "longitude" to location.longitude,
                         "altitude" to location.altitude, "accuracy" to location.accuracy.toDouble(),
                         "bearing" to location.bearing.toDouble(), "speed" to location.speed.toDouble(),
-                        "time" to location.time.toDouble(), "is_mock" to location.isFromMockProvider))
+                        "time" to location.time.toDouble(), "is_mock" to location.isFromMockProvider,
+                        "provider" to location.provider,
+                        "speed_accuracy" to if (Build.VERSION.SDK_INT >= 26 && location.hasSpeedAccuracy()) validAccuracy(location.speedAccuracyMetersPerSecond) else null,
+                        "vertical_accuracy" to if (Build.VERSION.SDK_INT >= 26 && location.hasVerticalAccuracy()) validAccuracy(location.verticalAccuracyMeters) else null,
+                        "bearing_accuracy" to if (Build.VERSION.SDK_INT >= 26 && location.hasBearingAccuracy()) validAccuracy(location.bearingAccuracyDegrees) else null))
                 }
                 native.onStopped = { code -> session.fail(token, code) }
-                native.startTracking(distance, forceManager) { error ->
+                native.startTracking(distance, forceManager, accuracy) { error ->
                     if (!session.current(token)) return@startTracking
                     if (error == null) {
                         timeout?.let(handler::removeCallbacks)
@@ -134,6 +139,8 @@ class BackgroundLocationService : MethodChannel.MethodCallHandler, PluginRegistr
             session.fail(token, if (error is SecurityException) "permission_denied" else "bind_failed")
         }
     }
+
+    private fun validAccuracy(value: Float): Double? = value.takeIf { it.isFinite() && it >= 0 }?.toDouble()
 
     private fun cleanup() {
         permissionInFlight = false
@@ -160,7 +167,13 @@ class BackgroundLocationService : MethodChannel.MethodCallHandler, PluginRegistr
                     result.error("invalid_argument", "distanceFilter must be finite and non-negative", null)
                     return
                 }
+                val requestedAccuracy = call.argument<String>("accuracy") ?: "high"
+                if (requestedAccuracy !in listOf("high", "balanced", "lowPower")) {
+                    result.error("invalid_argument", "Unknown accuracy setting", null)
+                    return
+                }
                 if (session.state != "starting" && session.state != "running") {
+                    accuracy = requestedAccuracy
                     distance = requestedDistance
                     forceManager = call.argument<Boolean>("force_location_manager") ?: false
                 }

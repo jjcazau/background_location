@@ -1,3 +1,9 @@
+### 0.9.7+embermap.1
+- Add GPS/network fallback arbitration with monotonic freshness checks and coarse-only support.
+- Expose nullable speed, vertical and bearing accuracy plus Android provider metadata.
+- Add high/balanced/lowPower startup settings on Android and iOS; preserve high default.
+- Add native provider/filter, Swift metadata/settings and Dart channel regressions.
+
 ### 0.9.0
 - Android: Set "exported" manifest setting to false [#163](https://github.com/Almoullim/background_location/pull/163)
 - Fixed an overrides of onRequestPermissionsResult [#151](https://github.com/Almoullim/background_location/pull/151)
