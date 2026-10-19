@@ -2,6 +2,14 @@ import Foundation
 import CoreLocation
 
 internal enum LocationConfiguration {
+    static func isStopped(_ location: CLLocation?, now: Date = Date()) -> Bool {
+        guard let location = location else { return false }
+        let age = now.timeIntervalSince(location.timestamp)
+        return age >= 0 && age <= 30 && location.horizontalAccuracy.isFinite &&
+            location.horizontalAccuracy >= 0 && location.horizontalAccuracy <= 25 &&
+            location.speed.isFinite && location.speed >= 0 && location.speed <= 0.5
+    }
+
     static func desiredAccuracy(_ setting: String) -> CLLocationAccuracy {
         switch setting {
         case "balanced": return kCLLocationAccuracyHundredMeters

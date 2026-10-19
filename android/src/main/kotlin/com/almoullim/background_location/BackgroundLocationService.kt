@@ -22,6 +22,8 @@ class BackgroundLocationService : MethodChannel.MethodCallHandler, PluginRegistr
     private var distance = 0.0
     private var forceManager = false
     private var accuracy = "high"
+    private var config = TrackingConfig()
+    private var lastProvider: Map<String, Any?>? = null
     private val handler = Handler(Looper.getMainLooper())
     private var timeout: Runnable? = null
     private val session = TrackingSession(::cleanup) { state, code ->
@@ -35,7 +37,22 @@ class BackgroundLocationService : MethodChannel.MethodCallHandler, PluginRegistr
         }
     }
 
+    private fun providerState(): Map<String, Any?> {
+        val ctx = context ?: return emptyMap()
+        val lm = ctx.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        val fine = ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        return mapOf("enabled" to locationEnabled(), "precise" to fine,
+            "authorization" to if (hasPermission()) "authorized" else "denied",
+            "gps" to lm.isProviderEnabled(LocationManager.GPS_PROVIDER),
+            "network" to lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER),
+            "power_save" to (ctx.getSystemService(Context.POWER_SERVICE) as PowerManager).isPowerSaveMode)
+    }
+    private fun publishProvider() {
+        val current = providerState()
+        if (current != lastProvider) { lastProvider = current; channel?.invokeMethod("provider_state", current) }
+    }
     private fun checkHealth() {
+        publishProvider()
         if (!hasPermission()) session.fail(session.token, "permission_denied")
         else if (!locationEnabled()) session.fail(session.token, "location_services_disabled")
     }
@@ -49,6 +66,7 @@ class BackgroundLocationService : MethodChannel.MethodCallHandler, PluginRegistr
         this.context = context
         channel = MethodChannel(messenger, "${BackgroundLocationPlugin.PLUGIN_ID}/methods")
         channel?.setMethodCallHandler(this)
+        publishProvider()
     }
 
     fun onDetachedFromEngine() {
@@ -75,6 +93,7 @@ class BackgroundLocationService : MethodChannel.MethodCallHandler, PluginRegistr
     }
 
     private fun begin(token: Int) {
+        lastProvider = null; publishProvider()
         timeout = Runnable { session.fail(token, "startup_timeout") }.also { handler.postDelayed(it, 30000) }
         if (hasPermission()) { bind(token); return }
         val currentActivity = activity
@@ -113,8 +132,9 @@ class BackgroundLocationService : MethodChannel.MethodCallHandler, PluginRegistr
                         "vertical_accuracy" to if (Build.VERSION.SDK_INT >= 26 && location.hasVerticalAccuracy()) validAccuracy(location.verticalAccuracyMeters) else null,
                         "bearing_accuracy" to if (Build.VERSION.SDK_INT >= 26 && location.hasBearingAccuracy()) validAccuracy(location.bearingAccuracyDegrees) else null))
                 }
+                native.onDiagnostic = { channel?.invokeMethod("diagnostic", it) }
                 native.onStopped = { code -> session.fail(token, code) }
-                native.startTracking(distance, forceManager, accuracy) { error ->
+                native.startTracking(config, forceManager) { error ->
                     if (!session.current(token)) return@startTracking
                     if (error == null) {
                         timeout?.let(handler::removeCallbacks)
@@ -151,6 +171,7 @@ class BackgroundLocationService : MethodChannel.MethodCallHandler, PluginRegistr
         service = null
         old?.onStopped = null
         old?.onLocation = null
+        old?.onDiagnostic = null
         old?.stopTracking()
         val oldConnection = connection
         connection = null
@@ -173,6 +194,8 @@ class BackgroundLocationService : MethodChannel.MethodCallHandler, PluginRegistr
                     return
                 }
                 if (session.state != "starting" && session.state != "running") {
+                    try { config = TrackingConfig.parse(mapOf("interval_ms" to LocationUpdatesService.UPDATE_INTERVAL_IN_MILLISECONDS) + (call.arguments as? Map<String, Any?> ?: emptyMap())) }
+                    catch (_: IllegalArgumentException) { result.error("invalid_argument", "Invalid configuration", null); return }
                     accuracy = requestedAccuracy
                     distance = requestedDistance
                     forceManager = call.argument<Boolean>("force_location_manager") ?: false
@@ -180,6 +203,21 @@ class BackgroundLocationService : MethodChannel.MethodCallHandler, PluginRegistr
                 session.start({ code ->
                     if (code == null) result.success(true) else result.error(code, "Location startup failed: $code", null)
                 }, ::begin)
+            }
+            "get_state" -> {
+                publishProvider()
+                result.success(mapOf("state" to session.state, "provider" to providerState()) +
+                    (service?.state() ?: mapOf("configuration" to config.toMap(), "motion" to "moving")))
+            }
+            "configure" -> {
+                val next = try { TrackingConfig.parse(call.arguments as? Map<*, *> ?: emptyMap<Any, Any>()) }
+                    catch (_: IllegalArgumentException) { result.error("invalid_argument", "Invalid configuration", null); return }
+                if (session.state != "running" || service == null) { result.error("service_stopped", "Tracking must be running", null); return }
+                val token = session.token
+                service!!.configure(next) { error ->
+                    if (error == null) { config = next; result.success(true) }
+                    else { result.error(error, "Could not apply configuration", null); if (error != "cancelled") session.fail(token, error) }
+                }
             }
             "stop_location_service" -> { session.stop(); result.success(true) }
             "is_service_running" -> result.success(session.state == "running")

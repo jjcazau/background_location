@@ -177,3 +177,35 @@ See README.md for exact policy and TESTING.md for repeatable commands.
 - Swift lifecycle and real CLLocation metadata/configuration harness passes;
   all Swift plugin sources type-check against the iOS simulator SDK/Flutter.
 - Full platform builds and physical-device tests remain for the application owner.
+
+
+## 0.10.0+embermap.1 — battery-aware profiles and observation quality
+
+Independently implemented using Android significant-motion sensors and Apple's
+CoreMotion/CoreLocation APIs, inspired by the public feature contracts of
+flutter_background_geolocation 5.9.0. No TransistorSoft native SDK code is included.
+
+- Typed live configuration and authoritative requested/effective state; shared
+  Dart listeners survive profile updates. Pending Android requests are cancelled
+  and cleaned up on stop/timeout/replacement, including their native callbacks.
+- Native stationary sharing with a two-minute evidence threshold and scheduled
+  two-minute recovery. Recording explicitly disables all adaptation. Missing
+  hardware/permission falls back to the moving profile; no new Android runtime
+  permission, continuous accelerometer loop, wake lock or automatic pause.
+- Provider/permission/power snapshots and change events; bounded coordinate-free
+  Dart diagnostics. Logs are intentionally in-memory, not a persistence subsystem.
+- Quality-aware one-shot sampling on the existing stream with fresh-best fallback;
+  reusable accuracy/timestamp/jump gate with rejection reasons.
+
+The detailed operating contract and acceptance matrix are in README.md/TESTING.md.
+Native persistence/replay and headless/reboot behaviour remain separate work.
+
+### Validation for 0.10.0
+
+- All 18 package Flutter tests pass; Dart analysis reports no issues.
+- Android plugin JVM tests cover API 28 and 35, including injected motion wake,
+  stationary downgrade, timed recovery, live recording override and teardown.
+- Swift lifecycle/configuration/quality/motion-policy harness passes on macOS and
+  the iOS 27 simulator; all plugin sources type-check against the simulator SDK.
+- Physical sensors, locked-screen timing, energy measurements and full host app
+  platform builds remain device acceptance work; no battery percentage is claimed.

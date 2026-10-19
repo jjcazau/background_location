@@ -1,3 +1,9 @@
+### 0.10.0+embermap.1
+- Add typed live configuration, recording/sharing profiles, provider snapshots/events and bounded diagnostics.
+- Add native motion-assisted stationary sharing with conservative recovery; recording stays continuous.
+- Add quality-aware one-shot sampling and reusable timestamp/accuracy/jump validation.
+- Cover profile replacement and motion recovery on Android 28/35 and Swift lifecycle/configuration on iOS simulator.
+
 ### 0.9.7+embermap.1
 - Add GPS/network fallback arbitration with monotonic freshness checks and coarse-only support.
 - Expose nullable speed, vertical and bearing accuracy plus Android provider metadata.

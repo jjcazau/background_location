@@ -181,3 +181,71 @@ least 10 seconds old; same-provider movement continues normally.
 API 26 and a present measurement. CoreLocation does not expose the provider;
 iOS bearing accuracy requires iOS 13.4. Missing/invalid uncertainty is null,
 not a claim of zero uncertainty. Existing fields and listeners are unchanged.
+
+
+### Live configuration and adaptive sharing (0.10.0+embermap.1)
+
+```dart
+await BackgroundLocation.startLocationService(config: TrackingConfig.sharing);
+// A simultaneous route recorder takes precedence without stopping the service:
+await BackgroundLocation.configure(TrackingConfig.recording);
+final state = await BackgroundLocation.getState();
+final fix = await BackgroundLocation().getCurrentPosition(
+  maximumAge: const Duration(seconds: 10), desiredAccuracy: 50, samples: 3);
+```
+
+`TrackingConfig.recording` requests high accuracy, 1-second Android intervals,
+zero distance filter and no adaptation. `sharing` requests high accuracy with
+15-second Android intervals and native adaptation. Intervals are requests, not
+OS scheduling guarantees; iOS has no equivalent interval setting. Live configure
+requires a running service. Android installs the replacement subscription before
+removing the old one; failed replacement ends the session with an error rather
+than falsely reporting the new configuration. Stop cancels pending replacements.
+Legacy start arguments and next-start Android configuration remain supported.
+
+Adaptive operation:
+
+- Android requires a successfully armed significant-motion trigger. Two minutes
+  of fresh, accurate (<=25m), low-speed (<=0.5m/s) fixes within 15m enable a
+  balanced-accuracy, 60-second/25m stationary request. GPS-only fallback hardware
+  without an enabled network provider retains GPS. Motion restores the moving
+  request; the one-shot trigger is rearmed. Unavailable sensors retain moving
+  settings. No accelerometer polling or wake locks are added.
+- iOS requires CoreMotion support and `NSMotionUsageDescription` in the host.
+  The OS can request Motion & Fitness permission when adaptive sharing starts.
+  High-confidence stationary activity and recent accurate low-speed location
+  evidence must agree for two minutes before requesting 100m accuracy/25m
+  displacement. Motion or a reliable moving fix restores the original request.
+  Missing/denied motion access retains moving settings. iOS <11 does not adapt.
+- Both schedule a return to the moving profile after at most two minutes of
+  stationary mode, then require stationary evidence again. This is a recovery
+  check, not a realtime OS guarantee: suspended scheduling can delay timers.
+  Neither platform stops location services or enables automatic location pauses.
+  A lowPower request is never upgraded to balanced by adaptation.
+- `configure(TrackingConfig.recording)` cancels motion tracking and all adaptive
+  timers. The app must choose the strongest profile required by active consumers.
+
+`getState()` returns lifecycle, requested/effective configuration, provider
+capabilities and motion state. `providerStateStream` reports capability changes
+separately from service lifecycle. Android checks availability during its existing
+health checks; iOS also observes permission, power-state and foreground changes.
+`BackgroundLocation.diagnostics` is a bounded 200-entry in-memory log of state,
+configuration and rejection reasons. It contains no coordinates or credentials;
+`clearDiagnostics()` clears it. It is not a durable log across process death.
+
+`LocationQualityFilter` validates capture time (30-second default maximum age,
+1-second future tolerance), horizontal accuracy, coordinates, ordering and implied
+speed after subtracting measurement uncertainty. It does not smooth coordinates.
+Callers choose accuracy/speed limits and call `reset()` between sessions. The raw
+package stream remains compatible; consumers explicitly apply this quality gate.
+
+`getCurrentPosition` samples the existing subscription and never starts a second
+location client or changes its power settings. It uses only fixes within the
+requested maximum age, returns early on the accuracy target, otherwise returns
+the best still-fresh fix on sample limit/timeout. Inspect returned accuracy to
+know whether the target was met. Timeout with no fresh fix throws; native stop
+cancels the request. Keep the legacy `getCurrentLocation` for next-event semantics.
+
+This release does not add reboot/headless continuation, geofencing, a native
+persistence queue or HTTP uploads. Real-device screen-off motion recovery and
+battery measurements remain required; unit tests do not establish battery savings.
