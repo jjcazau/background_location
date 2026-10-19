@@ -1,14 +1,39 @@
 # Ember Map maintained background_location
 
-Version `0.9.5+embermap.1` is maintained in `jjcazau/background_location` for
+Version `0.9.6+embermap.1` is maintained in `jjcazau/background_location` for
 Ember Map. See [PATCHES.md](PATCHES.md) for source attribution, scope, validation,
 and remaining work. Use an exact Git commit in consuming applications.
 
 This release preserves the existing public API and method-channel name. It does
 not add reboot recovery, headless Dart execution, or native location storage.
-Android consumers must obtain the required runtime location permission before
-starting tracking. Native platform changes require a full app rebuild by the
+Native startup requests location permission from the attached Activity and
+completes after permission and subscription succeed. Android foreground-start
+restrictions still apply when starting from the background. Native platform changes require a full app rebuild by the
 consumer; hot reload cannot load them.
+
+
+## Shared streams and failures
+
+```dart
+final locations = BackgroundLocation.locationStream.listen(onLocation);
+final states = BackgroundLocation.serviceStateStream.listen((state) {
+  // Reconcile UI/recording state when state.isTerminal is true.
+  // state.code identifies failures such as permission_denied.
+});
+await BackgroundLocation.startLocationService();
+final fix = await BackgroundLocation().getCurrentLocation(
+  timeout: const Duration(seconds: 20),
+); // Does not replace the ongoing stream.
+await BackgroundLocation.stopLocationService();
+await locations.cancel();
+await states.cancel();
+```
+
+`isServiceRunning()` queries subscription state; it does not promise a fresh fix.
+An explicit stop completes pending starts with a `cancelled` PlatformException.
+State events are broadcast to current listeners, not replayed to late subscribers.
+The legacy `getLocationUpdates` callback remains supported; use
+`removeLocationUpdates()` to cancel that callback without stopping the service.
 
 The historical upstream usage documentation follows.
 

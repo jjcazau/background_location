@@ -48,7 +48,7 @@ Modified in this fork, 2026-10-19:
 - Declare AndroidX dependencies used directly; compile against SDK 36 as Ember
   Map does. Allow Dart 3. Preserve existing native dependency versions otherwise.
 
-## Recommended next fixes (not implemented in this release)
+## Follow-up items identified after 0.9.5 (items 1–4 implemented in 0.9.6)
 
 1. Native startup state machine: wait for binding, permission and subscription
    success; cancel in-flight starts; report denial and failure to Dart. Current
@@ -82,3 +82,63 @@ these lifecycle guarantees. No complete Flutter platform build is run by this ta
   47 passed using this package through a temporary local override.
 - No running Dart app was available for hot reload; native changes require a
   fresh platform build by the user anyway.
+
+
+## 0.9.6+embermap.1 — lifecycle and shared stream
+
+Local follow-up implementation, 2026-10-19:
+
+- Explicit native starting/running/stopped/error states. Duplicate starts join the
+  pending result; native stop cancels pending results. Generation tokens reject
+  stale callbacks. Startup has a 30-second timeout and can be retried after error.
+- Android asks for coarse/fine permission before binding or foreground promotion,
+  rejects disabled location services, waits for the provider subscription, and
+  propagates bind/foreground/subscription failures to Dart. Pending bindings are
+  released even before connection. Permission requests for other plugins are
+  not consumed.
+- Tracking survives Activity detach/reattach; each plugin engine owns its bridge
+  and removes its permission-result listener on Activity detach. Engine detach
+  explicitly cleans up tracking.
+- Choose the Android backend before initialization. GPS fallback honors interval
+  and distance, reports provider disablement, and releases callbacks on stop.
+  Fused subscription completion is checked and callbacks removed after cancelled
+  requests. Remove the unused HandlerThread and LocalBroadcastManager transport.
+- Android permission/location availability is checked on Activity reattachment
+  and every five seconds on the main looper while running. Stop/error events
+  reach Dart. This is not a hard realtime guarantee: suspended/killed processes
+  cannot emit events, and OS scheduling can delay the check.
+- iOS waits for authorization, reports denial and non-transient CoreLocation
+  errors, ignores transient locationUnknown, and sends matching lifecycle events.
+  Background updates are enabled only when the app declares location background
+  mode. Running denotes an accepted subscription, not receipt of a GPS fix.
+- Public broadcast locationStream and serviceStateStream share one dispatcher.
+  getCurrentLocation subscribes independently, times out, and cancels its temporary
+  subscriptions on success/error/stop. Legacy callback registration replaces only
+  the legacy listener; removeLocationUpdates cancels it explicitly.
+- Configuration interval remains a next-subscription setting. Concurrent starts
+  retain the first start's configuration; stop then start to change providers.
+- Minimum Android SDK is now 21 and Flutter >=3.10, consistent with the maintained
+  Dart 3 dependency and Android test stack. Ember Map already exceeds these minima.
+
+### Validation for 0.9.6
+
+- Seven Flutter package regression tests: concurrent stream/legacy/one-shot
+  delivery, cancellation, timeout, native errors and payload decoding.
+- Eight Android JVM tests: four state-machine tests and four Robolectric native
+  bridge/service tests. Exercise real pending binding cleanup, permission denial,
+  timeout, forced GPS fallback interval/distance, Activity replacement, delivery,
+  permission revocation and removal of location listeners. Test runtime: API 28.
+- Swift lifecycle harness runs cancellation, coalescing, retry, late callback,
+  runtime failure and timeout scenarios; actual plugin type-checks against the
+  installed iOS simulator SDK and Flutter framework.
+- Fifty Ember Map tests cover background service, recorder and sharing integration,
+  including native-failure state reset and sharing shutdown. Native shutdown
+  reaches recorder error handling; sharing ends its track and preserves its outbox.
+- Dart analysis passes for the package. App analysis has existing naming and
+  constructor-style infos only. No full Flutter platform builds or physical-device
+  tests run. No running app was available for hot reload.
+
+Headless execution, process/reboot restoration, native buffering and optional
+significant-change tracking remain separate features, not claims of this release.
+Physical-device permission/background/screen-off checks are still needed before
+shipping. See TESTING.md for repeatable targeted commands.

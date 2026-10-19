@@ -1,254 +1,196 @@
 package com.almoullim.background_location
 
 import android.Manifest
-import io.flutter.plugin.common.MethodChannel
-
-import io.flutter.plugin.common.BinaryMessenger
 import android.app.Activity
 import android.content.*
 import android.content.pm.PackageManager
-import android.location.Location
-import android.os.IBinder
-import android.util.Log
-import android.widget.Toast
-import androidx.annotation.NonNull
+import android.os.*
 import androidx.core.app.ActivityCompat
-import androidx.localbroadcastmanager.content.LocalBroadcastManager
-import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
+import androidx.core.content.ContextCompat
+import androidx.core.location.LocationManagerCompat
+import android.location.LocationManager
+import io.flutter.plugin.common.*
 
-import io.flutter.plugin.common.MethodCall
-import io.flutter.plugin.common.PluginRegistry
-
-
-class BackgroundLocationService: MethodChannel.MethodCallHandler, PluginRegistry.RequestPermissionsResultListener {
-    companion object {
-        const val METHOD_CHANNEL_NAME = "${BackgroundLocationPlugin.PLUGIN_ID}/methods"
-        private const val REQUEST_PERMISSIONS_REQUEST_CODE = 34
-
-        private var instance: BackgroundLocationService? = null
-
-        /**
-         * Requests the singleton instance of [BackgroundLocationService] or creates it,
-         * if it does not yet exist.
-         */
-        fun getInstance(): BackgroundLocationService {
-            if (instance == null) {
-                instance = BackgroundLocationService()
-            }
-            return instance!!
-        }
-    }
-
-
-    /**
-     * Context that is set once attached to a FlutterEngine.
-     * Context should no longer be referenced when detached.
-     */
+class BackgroundLocationService : MethodChannel.MethodCallHandler, PluginRegistry.RequestPermissionsResultListener {
+    companion object { private const val PERMISSION_REQUEST = 34 }
     private var context: Context? = null
-    private lateinit var channel: MethodChannel
     private var activity: Activity? = null
-    private var isAttached = false
-    private var receiver: MyReceiver? = null
+    private var channel: MethodChannel? = null
+    private var connection: ServiceConnection? = null
     private var service: LocationUpdatesService? = null
-
-    /**
-     * Signals whether the LocationUpdatesService is bound
-     */
-    private var bound: Boolean = false
-    private var receiverRegistered = false
-
-    private val serviceConnection = object : ServiceConnection {
-        override fun onServiceConnected(name: ComponentName, service: IBinder) {
-            bound = true
-            val binder = service as LocationUpdatesService.LocalBinder
-            this@BackgroundLocationService.service = binder.service
-            requestLocation()
-        }
-
-        override fun onServiceDisconnected(name: ComponentName) {
-            service = null
+    private var permissionInFlight = false
+    private var distance = 0.0
+    private var forceManager = false
+    private val handler = Handler(Looper.getMainLooper())
+    private var timeout: Runnable? = null
+    private val session = TrackingSession(::cleanup) { state, code ->
+        channel?.invokeMethod("service_state", mapOf("state" to state, "code" to code))
+    }
+    private val healthCheck = object : Runnable {
+        override fun run() {
+            if (session.state != "running") return
+            checkHealth()
+            if (session.state == "running") handler.postDelayed(this, 5000)
         }
     }
 
-    fun onAttachedToEngine(@NonNull context: Context, @NonNull messenger: BinaryMessenger) {
+    private fun checkHealth() {
+        if (!hasPermission()) session.fail(session.token, "permission_denied")
+        else if (!locationEnabled()) session.fail(session.token, "location_services_disabled")
+    }
+
+    private fun locationEnabled(): Boolean {
+        val provider = context?.getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return false
+        return LocationManagerCompat.isLocationEnabled(provider)
+    }
+
+    fun onAttachedToEngine(context: Context, messenger: BinaryMessenger) {
         this.context = context
-        isAttached = true
-        channel = MethodChannel(messenger, METHOD_CHANNEL_NAME)
-        channel.setMethodCallHandler(this)
-
-        receiver = MyReceiver()
-
-        registerLocationReceiver()
+        channel = MethodChannel(messenger, "${BackgroundLocationPlugin.PLUGIN_ID}/methods")
+        channel?.setMethodCallHandler(this)
     }
 
     fun onDetachedFromEngine() {
-        stopLocationService()
+        session.stop()
+        permissionInFlight = false
         activity = null
-        receiver = null
-        channel.setMethodCallHandler(null)
+        channel?.setMethodCallHandler(null)
+        channel = null
         context = null
-        isAttached = false
     }
 
-    fun setActivity(binding: ActivityPluginBinding?) {
-        this.activity = binding?.activity
+    fun setActivity(activity: Activity?) {
+        this.activity = activity
+        if (activity != null && session.state == "running") checkHealth()
+        if (activity != null && session.state == "starting" && connection == null && hasPermission()) {
+            bind(session.token)
+        }
+    }
 
-        if(this.activity != null){
-            if (Utils.requestingLocationUpdates(context!!)) {
-                if (!checkPermissions()) {
-                    requestPermissions()
+    private fun hasPermission(): Boolean {
+        val ctx = context ?: return false
+        return ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun begin(token: Int) {
+        timeout = Runnable { session.fail(token, "startup_timeout") }.also { handler.postDelayed(it, 30000) }
+        if (hasPermission()) { bind(token); return }
+        val currentActivity = activity
+        if (currentActivity == null) { session.fail(token, "activity_unavailable"); return }
+        if (!permissionInFlight) {
+            permissionInFlight = true
+            try {
+                ActivityCompat.requestPermissions(currentActivity,
+                    arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION), PERMISSION_REQUEST)
+            } catch (error: RuntimeException) {
+                permissionInFlight = false
+                session.fail(token, "permission_request_failed")
+            }
+        }
+    }
+
+    private fun bind(token: Int) {
+        val ctx = context ?: run { session.fail(token, "engine_detached"); return }
+        if (!session.current(token) || connection != null) return
+        if (!hasPermission()) { session.fail(token, "permission_denied"); return }
+        if (!locationEnabled()) { session.fail(token, "location_services_disabled"); return }
+        val candidate = object : ServiceConnection {
+            override fun onServiceConnected(name: ComponentName, binder: IBinder) {
+                if (!session.current(token) || connection !== this) return
+                val native = (binder as? LocationUpdatesService.LocalBinder)?.service
+                if (native == null) { session.fail(token, "invalid_service"); return }
+                service = native
+                native.onLocation = { location ->
+                    if (session.current(token)) channel?.invokeMethod("location", mapOf(
+                        "latitude" to location.latitude, "longitude" to location.longitude,
+                        "altitude" to location.altitude, "accuracy" to location.accuracy.toDouble(),
+                        "bearing" to location.bearing.toDouble(), "speed" to location.speed.toDouble(),
+                        "time" to location.time.toDouble(), "is_mock" to location.isFromMockProvider))
+                }
+                native.onStopped = { code -> session.fail(token, code) }
+                native.startTracking(distance, forceManager) { error ->
+                    if (!session.current(token)) return@startTracking
+                    if (error == null) {
+                        timeout?.let(handler::removeCallbacks)
+                        timeout = null
+                        session.ready(token)
+                        handler.removeCallbacks(healthCheck)
+                        handler.postDelayed(healthCheck, 5000)
+                    } else session.fail(token, error)
                 }
             }
-        } else {
-            stopLocationService()
+            override fun onServiceDisconnected(name: ComponentName) = session.fail(token, "service_disconnected")
+            override fun onBindingDied(name: ComponentName) = session.fail(token, "service_disconnected")
+            override fun onNullBinding(name: ComponentName) = session.fail(token, "invalid_service")
         }
-    }
-
-    private fun startLocationService(distanceFilter: Double?, forceLocationManager : Boolean?): Int{
-        registerLocationReceiver()
-        if (!bound) {
-            val intent = Intent(context, LocationUpdatesService::class.java)
-            intent.putExtra("distance_filter", distanceFilter)
-            intent.putExtra("force_location_manager", forceLocationManager)
-            context!!.bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
-        }
-
-        return 0
-    }
-
-    private fun registerLocationReceiver() {
-        val currentContext = context ?: return
-        val currentReceiver = receiver ?: return
-        if (!receiverRegistered) {
-            LocalBroadcastManager.getInstance(currentContext).registerReceiver(
-                currentReceiver, IntentFilter(LocationUpdatesService.ACTION_BROADCAST))
-            receiverRegistered = true
-        }
-    }
-
-    private fun stopLocationService(): Int {
-        service?.removeLocationUpdates()
-        val currentContext = context
-        val currentReceiver = receiver
-        if (receiverRegistered && currentContext != null && currentReceiver != null) {
-            LocalBroadcastManager.getInstance(currentContext).unregisterReceiver(currentReceiver)
-        }
-        receiverRegistered = false
-        if (bound && currentContext != null) {
-            try {
-                currentContext.unbindService(serviceConnection)
-            } catch (error: IllegalArgumentException) {
-                Log.w(BackgroundLocationPlugin.TAG, "Service already unbound", error)
+        // Record the pending binding so stop can cancel it before onServiceConnected.
+        connection = candidate
+        try {
+            if (!ctx.bindService(Intent(ctx, LocationUpdatesService::class.java), candidate, Context.BIND_AUTO_CREATE)) {
+                session.fail(token, "bind_failed")
             }
+        } catch (error: RuntimeException) {
+            session.fail(token, if (error is SecurityException) "permission_denied" else "bind_failed")
         }
-        bound = false
+    }
+
+    private fun cleanup() {
+        permissionInFlight = false
+        handler.removeCallbacks(healthCheck)
+        timeout?.let(handler::removeCallbacks)
+        timeout = null
+        val old = service
         service = null
-        return 0
-    }
-
-    private fun setAndroidNotification(title: String?, message: String?, icon: String?):Int{
-        if (title != null) LocationUpdatesService.NOTIFICATION_TITLE = title
-        if (message != null) LocationUpdatesService.NOTIFICATION_MESSAGE = message
-        if (icon != null) LocationUpdatesService.NOTIFICATION_ICON = icon
-
-        if (service != null) {
-            service?.updateNotification()
+        old?.onStopped = null
+        old?.onLocation = null
+        old?.stopTracking()
+        val oldConnection = connection
+        connection = null
+        if (oldConnection != null) {
+            try { context?.unbindService(oldConnection) } catch (_: IllegalArgumentException) { }
         }
-
-        return 0
     }
 
-    private fun setConfiguration(timeInterval: Long?):Int {
-        if (timeInterval != null && timeInterval > 0) {
-            LocationUpdatesService.UPDATE_INTERVAL_IN_MILLISECONDS = timeInterval
-            LocationUpdatesService.FASTEST_UPDATE_INTERVAL_IN_MILLISECONDS = timeInterval / 2
-        }
-
-        return 0
-    }
-
-    override fun onMethodCall(@NonNull call: MethodCall, @NonNull result: MethodChannel.Result) {
+    override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
-            "stop_location_service" -> result.success(stopLocationService())
-            "start_location_service" -> result.success(startLocationService(call.argument("distance_filter"), call.argument("force_location_manager")))
-            "set_android_notification" -> result.success(setAndroidNotification(call.argument("title"),call.argument("message"),call.argument("icon")))
-            "set_configuration" -> result.success(setConfiguration(call.argument<String>("interval")?.toLongOrNull()))
+            "start_location_service" -> {
+                val requestedDistance = (call.argument<Number>("distance_filter"))?.toDouble() ?: 0.0
+                if (!requestedDistance.isFinite() || requestedDistance < 0) {
+                    result.error("invalid_argument", "distanceFilter must be finite and non-negative", null)
+                    return
+                }
+                if (session.state != "starting" && session.state != "running") {
+                    distance = requestedDistance
+                    forceManager = call.argument<Boolean>("force_location_manager") ?: false
+                }
+                session.start({ code ->
+                    if (code == null) result.success(true) else result.error(code, "Location startup failed: $code", null)
+                }, ::begin)
+            }
+            "stop_location_service" -> { session.stop(); result.success(true) }
+            "is_service_running" -> result.success(session.state == "running")
+            "set_android_notification" -> {
+                call.argument<String>("title")?.let { LocationUpdatesService.NOTIFICATION_TITLE = it }
+                call.argument<String>("message")?.let { LocationUpdatesService.NOTIFICATION_MESSAGE = it }
+                call.argument<String>("icon")?.let { LocationUpdatesService.NOTIFICATION_ICON = it }
+                try { service?.updateNotification(); result.success(true) }
+                catch (error: RuntimeException) { result.error("notification_failed", error.message, null) }
+            }
+            "set_configuration" -> {
+                val interval = call.argument<String>("interval")?.toLongOrNull()
+                if (interval == null || interval <= 0) result.error("invalid_argument", "interval must be positive", null)
+                else { LocationUpdatesService.UPDATE_INTERVAL_IN_MILLISECONDS = interval; result.success(true) }
+            }
             else -> result.notImplemented()
         }
     }
 
-    /**
-     * Requests a location updated.
-     * If permission is denied, it requests the needed permission
-     */
-    private fun requestLocation() {
-        if (!checkPermissions()) {
-            requestPermissions()
-        } else {
-            service?.requestLocationUpdates()
-        }
-    }
-
-    /**
-     * Checks the current permission for `ACCESS_FINE_LOCATION`
-     */
-    private fun checkPermissions(): Boolean {
-        return PackageManager.PERMISSION_GRANTED == ActivityCompat.checkSelfPermission(context!!, Manifest.permission.ACCESS_FINE_LOCATION)
-    }
-
-
-    /**
-     * Requests permission for location.
-     * Depending on the current activity, displays a rationale for the request.
-     */
-    private fun requestPermissions() {
-        if(activity == null) {
-            return
-        }
-
-        val shouldProvideRationale = ActivityCompat.shouldShowRequestPermissionRationale(activity!!, Manifest.permission.ACCESS_FINE_LOCATION)
-        if (shouldProvideRationale) {
-            Log.i(BackgroundLocationPlugin.TAG, "Displaying permission rationale to provide additional context.")
-            Toast.makeText(context, R.string.permission_rationale, Toast.LENGTH_LONG).show()
-
-        } else {
-            Log.i(BackgroundLocationPlugin.TAG, "Requesting permission")
-            ActivityCompat.requestPermissions(activity!!,
-                    arrayOf(Manifest.permission.ACCESS_FINE_LOCATION),
-                    REQUEST_PERMISSIONS_REQUEST_CODE)
-        }
-    }
-
-    private inner class MyReceiver : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
-            val location = intent.getParcelableExtra<Location>(LocationUpdatesService.EXTRA_LOCATION)
-            if (location != null) {
-                val locationMap = HashMap<String, Any>()
-                locationMap["latitude"] = location.latitude
-                locationMap["longitude"] = location.longitude
-                locationMap["altitude"] = location.altitude
-                locationMap["accuracy"] = location.accuracy.toDouble()
-                locationMap["bearing"] = location.bearing.toDouble()
-                locationMap["speed"] = location.speed.toDouble()
-                locationMap["time"] = location.time.toDouble()
-                locationMap["is_mock"] = location.isFromMockProvider
-                channel.invokeMethod("location", locationMap, null)
-            }
-        }
-    }
-
-    /**
-     * Handle the response from a permission request
-     * @return true if the result has been handled.
-     */
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray): Boolean {
-        Log.i(BackgroundLocationPlugin.TAG, "onRequestPermissionResult")
-        if (requestCode == REQUEST_PERMISSIONS_REQUEST_CODE) {
-            when {
-                grantResults!!.isEmpty() -> Log.i(BackgroundLocationPlugin.TAG, "User interaction was cancelled.")
-                grantResults[0] == PackageManager.PERMISSION_GRANTED -> service?.requestLocationUpdates()
-                else -> Toast.makeText(context, R.string.permission_denied_explanation, Toast.LENGTH_LONG).show()
-            }
+        if (requestCode != PERMISSION_REQUEST) return false
+        permissionInFlight = false
+        if (session.state == "starting") {
+            if (hasPermission()) bind(session.token) else session.fail(session.token, "permission_denied")
         }
         return true
     }

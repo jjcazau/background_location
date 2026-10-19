@@ -1,94 +1,128 @@
 import 'dart:async';
 import 'dart:io' show Platform;
-
 import 'package:flutter/services.dart';
 
-/// BackgroundLocation plugin to get background
-/// lcoation updates in iOS and Android
-class BackgroundLocation {
-  // The channel to be used for communication.
-  // This channel is also refrenced inside both iOS and Abdroid classes
-  static const MethodChannel _channel =
-      MethodChannel('com.almoullim.background_location/methods');
+/// Native tracking state. Running means subscribed, not that a GPS fix exists.
+class LocationServiceState {
+  const LocationServiceState(this.state, {this.code});
+  final String state;
+  final String? code;
+  bool get isRunning => state == 'running';
+  bool get isTerminal => state == 'stopped' || state == 'error';
+}
 
-  /// Stop receiving location updates
-  static Future<dynamic> stopLocationService() async {
-    return await _channel.invokeMethod('stop_location_service');
+class BackgroundLocation {
+  static const _channel =
+      MethodChannel('com.almoullim.background_location/methods');
+  static final _locations = StreamController<Location>.broadcast();
+  static final _states = StreamController<LocationServiceState>.broadcast();
+  static StreamSubscription<Location>? _legacySubscription;
+
+  // Reinstalling the same dispatcher is safe and also supports test/engine reset.
+  static void _listen() => _channel.setMethodCallHandler(_handle);
+
+  static Future<void> _handle(MethodCall call) async {
+    final data = call.arguments;
+    if (data is! Map) return;
+    if (call.method == 'service_state' && data['state'] is String) {
+      _states.add(LocationServiceState(data['state'] as String,
+          code: data['code'] as String?));
+    } else if (call.method == 'location') {
+      double? number(String key) => (data[key] as num?)?.toDouble();
+      _locations.add(Location(
+          latitude: number('latitude'),
+          longitude: number('longitude'),
+          altitude: number('altitude'),
+          accuracy: number('accuracy'),
+          bearing: number('bearing'),
+          speed: number('speed'),
+          time: number('time'),
+          isMock: data['is_mock'] as bool?));
+    }
   }
 
-  /// Start receiving location updated
+  /// Independent subscriptions share one native callback handler.
+  static Stream<Location> get locationStream {
+    _listen();
+    return _locations.stream;
+  }
+
+  static Stream<LocationServiceState> get serviceStateStream {
+    _listen();
+    return _states.stream;
+  }
+
   static Future<dynamic> startLocationService(
-      {double distanceFilter = 0.0,
-      bool forceAndroidLocationManager = false}) async {
-    return await _channel
-        .invokeMethod('start_location_service', <String, dynamic>{
+      {double distanceFilter = 0, bool forceAndroidLocationManager = false}) {
+    _listen();
+    return _channel.invokeMethod('start_location_service', {
       'distance_filter': distanceFilter,
-      'force_location_manager': forceAndroidLocationManager
+      'force_location_manager': forceAndroidLocationManager,
     });
   }
+
+  static Future<dynamic> stopLocationService() {
+    _listen();
+    return _channel.invokeMethod('stop_location_service');
+  }
+
+  static Future<bool> isServiceRunning() async =>
+      await _channel.invokeMethod<bool>('is_service_running') ?? false;
 
   static Future<dynamic> setAndroidNotification(
       {String? title, String? message, String? icon}) async {
     if (Platform.isAndroid) {
-      return await _channel.invokeMethod('set_android_notification',
-          <String, dynamic>{'title': title, 'message': message, 'icon': icon});
-    } else {
-      //return Promise.resolve();
-    }
-  }
-
-  static Future<dynamic> setAndroidConfiguration(int interval) async {
-    if (Platform.isAndroid) {
-      return await _channel.invokeMethod('set_configuration', <String, dynamic>{
-        'interval': interval.toString(),
+      return _channel.invokeMethod('set_android_notification', {
+        'title': title,
+        'message': message,
+        'icon': icon,
       });
-    } else {
-      //return Promise.resolve();
     }
   }
 
-  /// Get the current location once.
-  Future<Location> getCurrentLocation() async {
-    var completer = Completer<Location>();
-
-    var _location = Location();
-    getLocationUpdates((location) {
-      if (completer.isCompleted) return;
-      _location.latitude = location.latitude;
-      _location.longitude = location.longitude;
-      _location.accuracy = location.accuracy;
-      _location.altitude = location.altitude;
-      _location.bearing = location.bearing;
-      _location.speed = location.speed;
-      _location.time = location.time;
-      _location.isMock = location.isMock;
-      completer.complete(_location);
-    });
-
-    return completer.future;
+  /// Applies to the next native subscription; does not restart active tracking.
+  static Future<dynamic> setAndroidConfiguration(int interval) async {
+    if (interval <= 0) {
+      throw ArgumentError.value(interval, 'interval', 'Must be positive');
+    }
+    if (Platform.isAndroid) {
+      return _channel
+          .invokeMethod('set_configuration', {'interval': interval.toString()});
+    }
   }
 
-  /// Register a function to recive location updates as long as the location
-  /// service has started
-  static void getLocationUpdates(Function(Location) location) {
-    // add a handler on the channel to recive updates from the native classes
-    _channel.setMethodCallHandler((MethodCall methodCall) async {
-      if (methodCall.method == 'location' && methodCall.arguments is Map) {
-        var locationData = Map.from(methodCall.arguments);
-        // Call the user passed function
-        location(
-          Location(
-              latitude: (locationData['latitude'] as num?)?.toDouble(),
-              longitude: (locationData['longitude'] as num?)?.toDouble(),
-              altitude: (locationData['altitude'] as num?)?.toDouble(),
-              accuracy: (locationData['accuracy'] as num?)?.toDouble(),
-              bearing: (locationData['bearing'] as num?)?.toDouble(),
-              speed: (locationData['speed'] as num?)?.toDouble(),
-              time: (locationData['time'] as num?)?.toDouble(),
-              isMock: locationData['is_mock']),
-        );
+  /// Wait for a fresh fix while tracking, without replacing other listeners.
+  /// A timeout or native stop/failure cancels both temporary subscriptions.
+  Future<Location> getCurrentLocation(
+      {Duration timeout = const Duration(seconds: 30)}) async {
+    final result = Completer<Location>();
+    final locations = locationStream.listen((location) {
+      if (!result.isCompleted) result.complete(location);
+    });
+    final states = serviceStateStream.listen((state) {
+      if (state.isTerminal && !result.isCompleted) {
+        result.completeError(
+            PlatformException(code: state.code ?? 'service_stopped'));
       }
     });
+    try {
+      return await result.future.timeout(timeout);
+    } finally {
+      await locations.cancel();
+      await states.cancel();
+    }
+  }
+
+  /// Compatibility callback API. Replaces only the previous legacy callback.
+  /// Prefer locationStream.listen for explicitly cancellable subscriptions.
+  static void getLocationUpdates(void Function(Location) callback) {
+    _legacySubscription?.cancel();
+    _legacySubscription = locationStream.listen(callback);
+  }
+
+  static Future<void> removeLocationUpdates() async {
+    await _legacySubscription?.cancel();
+    _legacySubscription = null;
   }
 }
 
