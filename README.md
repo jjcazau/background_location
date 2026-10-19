@@ -1,3 +1,17 @@
+# Ember Map maintained background_location
+
+Version `0.9.5+embermap.1` is maintained in `jjcazau/background_location` for
+Ember Map. See [PATCHES.md](PATCHES.md) for source attribution, scope, validation,
+and remaining work. Use an exact Git commit in consuming applications.
+
+This release preserves the existing public API and method-channel name. It does
+not add reboot recovery, headless Dart execution, or native location storage.
+Android consumers must obtain the required runtime location permission before
+starting tracking. Native platform changes require a full app rebuild by the
+consumer; hot reload cannot load them.
+
+The historical upstream usage documentation follows.
+
 # Background Location
 
 A Flutter plugin to get location updates in the background for both Android and iOS (Requires iOS 10.0+). Uses `CoreLocation` for iOS and `FusedLocationProvider` for Android

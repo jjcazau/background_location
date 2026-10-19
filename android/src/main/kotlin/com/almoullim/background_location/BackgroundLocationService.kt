@@ -55,6 +55,7 @@ class BackgroundLocationService: MethodChannel.MethodCallHandler, PluginRegistry
      * Signals whether the LocationUpdatesService is bound
      */
     private var bound: Boolean = false
+    private var receiverRegistered = false
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName, service: IBinder) {
@@ -77,11 +78,13 @@ class BackgroundLocationService: MethodChannel.MethodCallHandler, PluginRegistry
 
         receiver = MyReceiver()
 
-        LocalBroadcastManager.getInstance(context).registerReceiver(receiver!!,
-                IntentFilter(LocationUpdatesService.ACTION_BROADCAST))
+        registerLocationReceiver()
     }
 
     fun onDetachedFromEngine() {
+        stopLocationService()
+        activity = null
+        receiver = null
         channel.setMethodCallHandler(null)
         context = null
         isAttached = false
@@ -102,8 +105,7 @@ class BackgroundLocationService: MethodChannel.MethodCallHandler, PluginRegistry
     }
 
     private fun startLocationService(distanceFilter: Double?, forceLocationManager : Boolean?): Int{
-        LocalBroadcastManager.getInstance(context!!).registerReceiver(receiver!!,
-                IntentFilter(LocationUpdatesService.ACTION_BROADCAST))
+        registerLocationReceiver()
         if (!bound) {
             val intent = Intent(context, LocationUpdatesService::class.java)
             intent.putExtra("distance_filter", distanceFilter)
@@ -114,15 +116,33 @@ class BackgroundLocationService: MethodChannel.MethodCallHandler, PluginRegistry
         return 0
     }
 
+    private fun registerLocationReceiver() {
+        val currentContext = context ?: return
+        val currentReceiver = receiver ?: return
+        if (!receiverRegistered) {
+            LocalBroadcastManager.getInstance(currentContext).registerReceiver(
+                currentReceiver, IntentFilter(LocationUpdatesService.ACTION_BROADCAST))
+            receiverRegistered = true
+        }
+    }
+
     private fun stopLocationService(): Int {
         service?.removeLocationUpdates()
-        LocalBroadcastManager.getInstance(context!!).unregisterReceiver(receiver!!)
-
-        if (bound) {
-            context!!.unbindService(serviceConnection)
-            bound = false
+        val currentContext = context
+        val currentReceiver = receiver
+        if (receiverRegistered && currentContext != null && currentReceiver != null) {
+            LocalBroadcastManager.getInstance(currentContext).unregisterReceiver(currentReceiver)
         }
-
+        receiverRegistered = false
+        if (bound && currentContext != null) {
+            try {
+                currentContext.unbindService(serviceConnection)
+            } catch (error: IllegalArgumentException) {
+                Log.w(BackgroundLocationPlugin.TAG, "Service already unbound", error)
+            }
+        }
+        bound = false
+        service = null
         return 0
     }
 
@@ -139,7 +159,10 @@ class BackgroundLocationService: MethodChannel.MethodCallHandler, PluginRegistry
     }
 
     private fun setConfiguration(timeInterval: Long?):Int {
-        if (timeInterval != null) LocationUpdatesService.UPDATE_INTERVAL_IN_MILLISECONDS = timeInterval
+        if (timeInterval != null && timeInterval > 0) {
+            LocationUpdatesService.UPDATE_INTERVAL_IN_MILLISECONDS = timeInterval
+            LocationUpdatesService.FASTEST_UPDATE_INTERVAL_IN_MILLISECONDS = timeInterval / 2
+        }
 
         return 0
     }

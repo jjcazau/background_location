@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:io' show Platform;
 
-import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 /// BackgroundLocation plugin to get background
@@ -13,17 +12,22 @@ class BackgroundLocation {
       MethodChannel('com.almoullim.background_location/methods');
 
   /// Stop receiving location updates
-  static stopLocationService() async {
+  static Future<dynamic> stopLocationService() async {
     return await _channel.invokeMethod('stop_location_service');
   }
 
   /// Start receiving location updated
-  static startLocationService({double distanceFilter = 0.0, bool forceAndroidLocationManager = false}) async {
-    return await _channel.invokeMethod('start_location_service',
-        <String, dynamic>{'distance_filter': distanceFilter, 'force_location_manager': forceAndroidLocationManager});
+  static Future<dynamic> startLocationService(
+      {double distanceFilter = 0.0,
+      bool forceAndroidLocationManager = false}) async {
+    return await _channel
+        .invokeMethod('start_location_service', <String, dynamic>{
+      'distance_filter': distanceFilter,
+      'force_location_manager': forceAndroidLocationManager
+    });
   }
 
-  static setAndroidNotification(
+  static Future<dynamic> setAndroidNotification(
       {String? title, String? message, String? icon}) async {
     if (Platform.isAndroid) {
       return await _channel.invokeMethod('set_android_notification',
@@ -33,7 +37,7 @@ class BackgroundLocation {
     }
   }
 
-  static setAndroidConfiguration(int interval) async {
+  static Future<dynamic> setAndroidConfiguration(int interval) async {
     if (Platform.isAndroid) {
       return await _channel.invokeMethod('set_configuration', <String, dynamic>{
         'interval': interval.toString(),
@@ -48,7 +52,8 @@ class BackgroundLocation {
     var completer = Completer<Location>();
 
     var _location = Location();
-    await getLocationUpdates((location) {
+    getLocationUpdates((location) {
+      if (completer.isCompleted) return;
       _location.latitude = location.latitude;
       _location.longitude = location.longitude;
       _location.accuracy = location.accuracy;
@@ -56,31 +61,30 @@ class BackgroundLocation {
       _location.bearing = location.bearing;
       _location.speed = location.speed;
       _location.time = location.time;
+      _location.isMock = location.isMock;
       completer.complete(_location);
     });
 
     return completer.future;
   }
 
-
-
   /// Register a function to recive location updates as long as the location
   /// service has started
-  static getLocationUpdates(Function(Location) location) {
+  static void getLocationUpdates(Function(Location) location) {
     // add a handler on the channel to recive updates from the native classes
     _channel.setMethodCallHandler((MethodCall methodCall) async {
-      if (methodCall.method == 'location') {
+      if (methodCall.method == 'location' && methodCall.arguments is Map) {
         var locationData = Map.from(methodCall.arguments);
         // Call the user passed function
         location(
           Location(
-              latitude: locationData['latitude'],
-              longitude: locationData['longitude'],
-              altitude: locationData['altitude'],
-              accuracy: locationData['accuracy'],
-              bearing: locationData['bearing'],
-              speed: locationData['speed'],
-              time: locationData['time'],
+              latitude: (locationData['latitude'] as num?)?.toDouble(),
+              longitude: (locationData['longitude'] as num?)?.toDouble(),
+              altitude: (locationData['altitude'] as num?)?.toDouble(),
+              accuracy: (locationData['accuracy'] as num?)?.toDouble(),
+              bearing: (locationData['bearing'] as num?)?.toDouble(),
+              speed: (locationData['speed'] as num?)?.toDouble(),
+              time: (locationData['time'] as num?)?.toDouble(),
               isMock: locationData['is_mock']),
         );
       }
@@ -100,16 +104,16 @@ class Location {
   bool? isMock;
 
   Location(
-      {@required this.longitude,
-      @required this.latitude,
-      @required this.altitude,
-      @required this.accuracy,
-      @required this.bearing,
-      @required this.speed,
-      @required this.time,
-      @required this.isMock});
+      {this.longitude,
+      this.latitude,
+      this.altitude,
+      this.accuracy,
+      this.bearing,
+      this.speed,
+      this.time,
+      this.isMock});
 
-  toMap() {
+  Map<String, dynamic> toMap() {
     var obj = {
       'latitude': latitude,
       'longitude': longitude,

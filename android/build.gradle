@@ -25,7 +25,7 @@ apply plugin: 'com.android.library'
 apply plugin: 'kotlin-android'
 
 android {
-    compileSdkVersion 31
+    compileSdkVersion 36
     namespace = 'com.almoullim.background_location'
 
     compileOptions {
@@ -52,6 +52,8 @@ android {
 
 dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:$kotlin_version"
+    implementation "androidx.core:core:1.13.1"
+    implementation "androidx.localbroadcastmanager:localbroadcastmanager:1.1.0"
     implementation 'com.google.android.gms:play-services-location:21.0.1'
     implementation 'com.google.android.material:material:1.0.0'
 }

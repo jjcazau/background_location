@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.*
+import android.content.pm.ServiceInfo
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
@@ -56,7 +57,7 @@ class LocationUpdatesService : Service() {
         internal const val EXTRA_LOCATION = "$PACKAGE_NAME.location"
         private const val EXTRA_STARTED_FROM_NOTIFICATION = "$PACKAGE_NAME.started_from_notification"
         var UPDATE_INTERVAL_IN_MILLISECONDS: Long = 1000
-        private val FASTEST_UPDATE_INTERVAL_IN_MILLISECONDS = UPDATE_INTERVAL_IN_MILLISECONDS / 2
+        var FASTEST_UPDATE_INTERVAL_IN_MILLISECONDS = UPDATE_INTERVAL_IN_MILLISECONDS / 2
         private const val NOTIFICATION_ID = 12345678
         private lateinit var broadcastReceiver: BroadcastReceiver
 
@@ -84,7 +85,7 @@ class LocationUpdatesService : Service() {
                     .setOngoing(true)
                     .setSound(null)
                     .setPriority(NotificationCompat.PRIORITY_HIGH)
-                    .setSmallIcon(resources.getIdentifier(NOTIFICATION_ICON, "mipmap", packageName))
+                    .setSmallIcon(notificationIcon())
                     .setWhen(System.currentTimeMillis())
                     .setStyle(NotificationCompat.BigTextStyle().bigText(NOTIFICATION_MESSAGE))
                     .setContentIntent(pendingIntent)
@@ -95,6 +96,17 @@ class LocationUpdatesService : Service() {
 
             return builder
         }
+
+    private fun notificationIcon(): Int {
+        val name = NOTIFICATION_ICON.removePrefix("@").substringAfter('/')
+        val preferredType = if (NOTIFICATION_ICON.startsWith("@drawable/")) "drawable" else "mipmap"
+        val preferred = resources.getIdentifier(name, preferredType, packageName)
+        if (preferred != 0) return preferred
+        val fallbackType = if (preferredType == "drawable") "mipmap" else "drawable"
+        val fallback = resources.getIdentifier(name, fallbackType, packageName)
+        if (fallback != 0) return fallback
+        return applicationInfo.icon.takeIf { it != 0 } ?: android.R.drawable.ic_menu_mylocation
+    }
 
     private var mServiceHandler: Handler? = null
 
@@ -111,7 +123,7 @@ class LocationUpdatesService : Service() {
             mFusedLocationCallback = object : LocationCallback() {
                 override fun onLocationResult(locationResult: LocationResult) {
                     super.onLocationResult(locationResult)
-                    onNewLocation(locationResult.lastLocation!!)
+                    locationResult.lastLocation?.let { onNewLocation(it) }
                 }
             }
         } else {
@@ -170,7 +182,11 @@ class LocationUpdatesService : Service() {
     fun updateNotification() {
         if (!isStarted) {
             isStarted = true
-            startForeground(NOTIFICATION_ID, notification.build())
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIFICATION_ID, notification.build(), ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
+            } else {
+                startForeground(NOTIFICATION_ID, notification.build())
+            }
         } else {
             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             notificationManager.notify(NOTIFICATION_ID, notification.build())
